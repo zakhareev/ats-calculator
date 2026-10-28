@@ -1,0 +1,18 @@
+{
+  "name": "ats-calculator",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Калькулятор безопасности авиационной транспортной системы (системная динамика, метод Рунге — Кутты 4-го порядка)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0",
+    "vitest": "^2.1.0"
+  }
+}

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Калькулятор авиабезопасности</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Калькулятор авиабезопасности</h1>
+    <p class="lede">Прогноз показателей авиационной транспортной системы методом системной динамики. Меняйте внешние факторы и начальные значения, сравнивайте сценарий с базовым.</p>
+  </header>
+
+  <div class="presets" id="presets" role="group" aria-label="Готовые сценарии"><span class="lbl">Сценарий:</span></div>
+
+  <div class="app">
+    <main class="results">
+      <div class="tiles" id="tiles"></div>
+
+      <section class="card" aria-labelledby="h-dyn">
+        <div class="card-head">
+          <h2 id="h-dyn">Динамика переменных</h2>
+          <p class="keyline" id="keyline"></p>
+        </div>
+        <div class="legend" id="legend" role="group" aria-label="Переменные на графике"></div>
+        <div class="chart" id="chart1"></div>
+        <p class="note">Значения нормированы к диапазону от 0 до 1. Наведите курсор на график, чтобы увидеть значения по годам.</p>
+      </section>
+
+      <section class="card" aria-labelledby="h-slice">
+        <div class="card-head">
+          <h2 id="h-slice">Состояние системы в выбранный год</h2>
+          <p>Вертикальная метка на шкале показывает значение в базовом сценарии</p>
+        </div>
+        <div class="yr"><label for="yearSel">Год</label><input type="range" id="yearSel" min="0" max="12" step="1" value="12"><output id="yearOut" for="yearSel"></output></div>
+        <div id="slice"></div>
+      </section>
+
+      <section class="card" aria-labelledby="h-f">
+        <div class="card-head">
+          <h2 id="h-f">Внешние факторы</h2>
+          <p>Линейные функции времени, с учётом множителей</p>
+        </div>
+        <div class="legend" id="legendF"></div>
+        <div class="chart" id="chart2"></div>
+      </section>
+
+      <section class="card" aria-labelledby="h-t">
+        <div class="card-head">
+          <h2 id="h-t">Таблица значений</h2>
+          <div class="resetbar"><button class="btn" id="copyCsv" type="button">Скопировать CSV</button></div>
+        </div>
+        <div class="tablewrap"><table id="tbl"></table></div>
+        <textarea class="csvbox" id="csvbox" readonly hidden aria-label="Данные в формате CSV"></textarea>
+      </section>
+    </main>
+
+    <aside class="controls" aria-label="Параметры расчёта">
+      <details class="card" open>
+        <summary><h3>Внешние факторы F(t)</h3></summary>
+        <div class="body" id="ctlF"></div>
+      </details>
+      <details class="card" open>
+        <summary><h3>Начальные значения X(0)</h3></summary>
+        <div class="body" id="ctlX0"></div>
+      </details>
+      <details class="card">
+        <summary><h3>Прямое воздействие на X</h3></summary>
+        <div class="body" id="ctlU"></div>
+      </details>
+      <details class="card">
+        <summary><h3>Параметры расчёта</h3></summary>
+        <div class="body" id="ctlCalc"></div>
+      </details>
+      <details class="card">
+        <summary><h3>Коэффициенты уравнений</h3></summary>
+        <div class="body" id="ctlCoef"></div>
+      </details>
+      <details class="card">
+        <summary><h3>О модели и допущениях</h3></summary>
+        <div class="body about" id="about"></div>
+      </details>
+      <div class="resetbar"><button class="btn" id="resetAll" type="button">Сбросить всё к базовому сценарию</button></div>
+    </aside>
+  </div>
+</div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
