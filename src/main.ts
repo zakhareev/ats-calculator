@@ -1,17 +1,20 @@
 import './style.css';
-import { defaults, solve, type Params } from './model';
-import { VAR, FAC, SUB, PRESETS, type Item } from './data';
+import { defaults, solve, FUNCS, N_FUNCS, type Params, type Poly } from './model';
+import { VAR, FAC, PRESETS, sub, type Item } from './data';
 import { $, el, esc, f2 } from './dom';
-import { lineChart } from './chart';
+import { lineChart, fnChart } from './chart';
+import { fitFromStatistics, parseStatistics, type FitResult } from './stats';
 
 let P: Params = defaults();
 let startYear = 2011;
 let activePreset: string | null = 'base';
-const shown: number[] = [1, 2, 3, 7];
+const shown: number[] = [0, 1, 6, 7];
 const shownF: number[] = [0, 1, 2, 3, 4];
-let yearIdx = 12;
+let yearIdx = 10;
+let fnIdx = 0;
 let pending = false;
 let csvText = '';
+let fit: FitResult | null = null;
 
 interface Inputs {
   f: HTMLInputElement[][];
@@ -22,14 +25,31 @@ interface Inputs {
   years: HTMLInputElement;
   substeps: HTMLInputElement;
   clamp: HTMLInputElement;
+  norm: HTMLInputElement;
 }
 const inputs = { f: [], x0: [], u: [], coef: [] } as unknown as Inputs;
 
 const col = (i: number): string => `var(--s${i + 1})`;
+const num = (v: number): string => String(Math.round(v * 1e6) / 1e6);
+const fmt3 = (v: number): string => (Math.round(v * 1000) / 1000).toString().replace('.', ',').replace('-', '−');
+
+function polyText(c: readonly number[]): string {
+  const terms: string[] = [];
+  const names = ['', 'X', 'X²', 'X³'];
+  for (let k = 3; k >= 0; k--) {
+    const v = c[k];
+    const a = fmt3(Math.abs(v));
+    const body = k === 0 ? a : `${a}·${names[k]}`;
+    terms.push(terms.length === 0 ? (v < 0 ? '−' : '') + body : (v < 0 ? ' − ' : ' + ') + body);
+  }
+  return terms.join('');
+}
 
 function numInput(id: string, val: number, min: string, max: string, step: string, onchange: (v: number) => void): HTMLInputElement {
-  const i = el('input', { id, type: 'number', class: 'num', min, max, step, inputmode: 'decimal' });
-  i.value = String(val);
+  const i = el('input', { id, type: 'number', class: 'num', step, inputmode: 'decimal' });
+  if (min !== '') i.min = min;
+  if (max !== '') i.max = max;
+  i.value = num(val);
   i.addEventListener('input', () => {
     let v = parseFloat(i.value);
     if (isNaN(v)) return;
@@ -48,23 +68,37 @@ function setYearMax(): void {
   if (yearIdx > P.years) yearIdx = P.years;
 }
 
+function funcLabel(k: number): string {
+  return `f${sub(k + 1)}(${VAR[FUNCS[k].arg].s})`;
+}
+
 function buildControls(): void {
   const cf = $('ctlF');
-  cf.appendChild(el('div', { class: 'row3 head' }, '<span>Фактор</span><span style="text-align:right">a</span><span style="text-align:right">b</span><span style="text-align:right">множитель</span>'));
+  cf.appendChild(el('div', { class: 'row4 head' }, '<span>t²</span><span>t</span><span>1</span><span>множитель</span>'));
   FAC.forEach((fc, j) => {
-    const row = el('div', { class: 'row3' });
-    row.appendChild(el('label', { for: `fa${j}`, title: fc.full }, `<b>${fc.s}</b> ${esc(fc.short)}`));
-    const ia = numInput(`fa${j}`, P.factors[j].a, '-5', '5', '0.01', (v) => { P.factors[j].a = v; });
-    const ib = numInput(`fb${j}`, P.factors[j].b, '-5', '5', '0.01', (v) => { P.factors[j].b = v; });
+    const row = el('div', { class: 'row4' });
+    row.appendChild(el('label', { title: fc.full }, `<b>${fc.s}</b> ${esc(fc.short)}`));
+    const q = P.factors[j];
+    const i2 = numInput(`fq${j}`, q[2], '-1000', '1000', '0.01', (v) => { P.factors[j][2] = v; });
+    const i1 = numInput(`fl${j}`, q[1], '-1000', '1000', '0.01', (v) => { P.factors[j][1] = v; });
+    const i0 = numInput(`fc${j}`, q[0], '-1000', '1000', '0.01', (v) => { P.factors[j][0] = v; });
     const ik = numInput(`fk${j}`, P.scale[j], '0', '3', '0.05', (v) => { P.scale[j] = v; });
-    ia.setAttribute('aria-label', `a для ${fc.s}`);
-    ib.setAttribute('aria-label', `b для ${fc.s}`);
+    i2.setAttribute('aria-label', `Коэффициент при t² для ${fc.s}`);
+    i1.setAttribute('aria-label', `Коэффициент при t для ${fc.s}`);
+    i0.setAttribute('aria-label', `Свободный член для ${fc.s}`);
     ik.setAttribute('aria-label', `Множитель для ${fc.s}`);
-    row.append(ia, ib, ik);
+    row.append(i2, i1, i0, ik);
     cf.appendChild(row);
-    inputs.f.push([ia, ib, ik]);
+    inputs.f.push([i2, i1, i0, ik]);
   });
-  cf.appendChild(el('p', { class: 'note' }, 'F(t) = (a + b·t) × множитель, где t от 0 (начало периода) до 1 (конец).'));
+  const nr = el('div', { class: 'checkrow' });
+  const nb = el('input', { type: 'checkbox', id: 'normF' });
+  nb.checked = P.normalizeFactors;
+  nb.addEventListener('change', () => { P.normalizeFactors = nb.checked; markCustom(); schedule(); });
+  nr.append(nb, el('label', { for: 'normF' }, 'Нормировать факторы на максимум за период<small style="display:block;color:var(--muted)">Как и переменные, факторы приводятся к шкале до 1; иначе значения порядка десятков сразу выводят систему за границы</small>'));
+  cf.appendChild(nr);
+  inputs.norm = nb;
+  cf.appendChild(el('p', { class: 'note' }, 'F(t) = (c₂t² + c₁t + c₀) × множитель, где t от 0 (начало периода) до 1 (конец). Значения по умолчанию из рукописи.'));
 
   const cx = $('ctlX0');
   VAR.forEach((v, i) => {
@@ -87,11 +121,28 @@ function buildControls(): void {
     inputs.x0.push([r, o]);
   });
 
+  const co = $('ctlCoef');
+  co.appendChild(el('p', { class: 'note' }, 'Функция влияния fₖ(X) = c₃X³ + c₂X² + c₁X + c₀. Значения по умолчанию демонстрационные: в материалах задания числовые коэффициенты не приведены, их строят регрессией по статистике (блок выше).'));
+  co.appendChild(el('div', { class: 'row4 head' }, '<span>c₃ (X³)</span><span>c₂ (X²)</span><span>c₁ (X)</span><span>c₀</span>'));
+  P.coef.forEach((c, k) => {
+    const row = el('div', { class: 'row4' });
+    row.appendChild(el('label', { title: `${VAR[FUNCS[k].target].short} ← ${VAR[FUNCS[k].arg].short}` }, `<b>${funcLabel(k)}</b>`));
+    const order = [3, 2, 1, 0];
+    const ins = order.map((d) => {
+      const inp = numInput(`c${k}_${d}`, c[d], '-1000', '1000', '0.01', (v) => { P.coef[k][d] = v; });
+      inp.setAttribute('aria-label', `c${d} для f${k + 1}`);
+      return inp;
+    });
+    row.append(...ins);
+    co.appendChild(row);
+    inputs.coef.push([ins[3], ins[2], ins[1], ins[0]]);
+  });
+
   const cu = $('ctlU');
   cu.appendChild(el('p', { class: 'note' }, 'Добавляет постоянное слагаемое к правой части уравнения: dXᵢ/dt = … + Uᵢ. Положительное значение ускоряет рост переменной, отрицательное замедляет.'));
   VAR.forEach((v, i) => {
     const row = el('div', { class: 'row' });
-    row.appendChild(el('label', { for: `u${i}`, title: v.full }, `<b>U${SUB[i]}</b> ${esc(v.short)}`));
+    row.appendChild(el('label', { for: `u${i}`, title: v.full }, `<b>U${sub(i + 1)}</b> ${esc(v.short)}`));
     const inp = numInput(`u${i}`, P.extra[i], '-2', '2', '0.05', (x) => { P.extra[i] = x; });
     row.appendChild(inp);
     cu.appendChild(row);
@@ -122,50 +173,70 @@ function buildControls(): void {
   cc.appendChild(r4);
   inputs.clamp = cb;
 
-  const co = $('ctlCoef');
-  co.appendChild(el('p', { class: 'note' }, 'Функции влияния fₖ(Xⱼ) = a + b·Xⱼ, найденные авторами статьи регрессионным анализом.'));
-  co.appendChild(el('div', { class: 'row3 head' }, '<span>Функция</span><span></span><span style="text-align:right">a</span><span style="text-align:right">b</span>'));
-  P.coef.forEach((c, k) => {
-    const row = el('div', { class: 'row3' });
-    row.appendChild(el('label', { for: `ca${k}` }, `f${SUB[k]}(X${SUB[c.arg]})`));
-    row.appendChild(el('span'));
-    const ia = numInput(`ca${k}`, c.a, '-5', '5', '0.01', (v) => { P.coef[k].a = v; });
-    const ib = numInput(`cb${k}`, c.b, '-5', '5', '0.01', (v) => { P.coef[k].b = v; });
-    ia.setAttribute('aria-label', `a для f${k + 1}`);
-    ib.setAttribute('aria-label', `b для f${k + 1}`);
-    row.append(ia, ib);
-    co.appendChild(row);
-    inputs.coef.push([ia, ib]);
-  });
+  const sel = $<HTMLSelectElement>('fnSel');
+  for (let k = 0; k < N_FUNCS; k++) {
+    const o = el('option', { value: String(k) }, `${funcLabel(k)} → ${VAR[FUNCS[k].target].s}`);
+    sel.appendChild(o);
+  }
+  sel.addEventListener('change', () => { fnIdx = parseInt(sel.value, 10); schedule(); });
 
   const dict = (a: Item[]): string => a.map((v) => `<div><b>${v.s}</b><span>${esc(v.full)}</span></div>`).join('');
   $('about').innerHTML =
-    '<p>Система из восьми дифференциальных уравнений описывает, как внешние факторы и переменные влияют друг на друга. Решение ищется методом Рунге — Кутты 4-го порядка.</p>' +
-    '<pre>dX₁/dt = F₃ − f₁(X₂)·f₂(X₃)·f₃(X₄)\n' +
-    'dX₂/dt = (F₁+F₂+F₄)·f₄(X₄)·f₅(X₆)·f₆(X₇) − (F₃+F₅)·f₇(X₈)\n' +
-    'dX₃/dt = F₄·f₈(X₇) − (F₃+F₅)·f₉(X₁)\n' +
-    'dX₄/dt = F₂·f₁₀(X₂)·f₁₁(X₇) − (F₃+F₅)·f₁₂(X₁)\n' +
-    'dX₅/dt = f₁₃(X₂) − F₅\n' +
-    'dX₆/dt = F₂·f₁₄(X₂) − F₅\n' +
-    'dX₇/dt = F₂·f₁₅(X₂)·f₁₆(X₃)·f₁₇(X₄) − (F₃+F₅)\n' +
-    'dX₈/dt = F₅ − f₁₈(X₂)</pre>' +
+    '<p>Система из десяти дифференциальных уравнений описывает, как внешние факторы и переменные влияют друг на друга. Решение ищется методом Рунге — Кутты 4-го порядка.</p>' +
+    '<pre>dXпроис/dt = (Price+For+Dol)·f₁(Xстар)·f₂(Xнаруш) − (Covid+Law)·f₃(Xнов)·f₄(Xтрен)·f₅(Xконтр)\n' +
+    'dXстар/dt = Dol·f₆(Xпроис)·f₇(Xтех) − f₈(Xбил)·f₉(Xнов)\n' +
+    'dXнаруш/dt = For·f₁₀(Xпроис)·f₁₁(Xчел)·f₁₂(Xповт) − Law·f₁₃(Xтрен)\n' +
+    'dXбил/dt = −(Price+Dol+Covid)·f₁₄(Xпроис)\n' +
+    'dXчел/dt = For·f₁₅(Xнаруш)·f₁₆(Xповт) − Law·f₁₇(Xтрен)\n' +
+    'dXтех/dt = Price·f₁₈(Xстар)·f₁₉(Xповт) − Law·f₂₀(Xнов)·f₂₁(Xконтр)\n' +
+    'dXнов/dt = Law·f₂₂(Xбил)·f₂₃(Xтех)·f₂₄(Xконтр)·f₂₅(Xповт) − (Price+Dol+Covid)\n' +
+    'dXтрен/dt = Law − Covid·f₂₆(Xпроис)·f₂₇(Xнаруш)·f₂₈(Xчел)·f₂₉(Xповт)\n' +
+    'dXконтр/dt = Law − f₃₀(Xпроис)·f₃₁(Xтех)·f₃₂(Xповт)\n' +
+    'dXповт/dt = Price·f₃₃(Xчел)·f₃₄(Xтех) − f₃₅(Xтрен)·f₃₆(Xконтр)</pre>' +
     '<p><b>Допущения калькулятора</b></p><ul>' +
-    '<li>Время t нормировано: 0 соответствует первому году периода, 1 последнему. При значениях по умолчанию период 2011–2023 годов.</li>' +
-    '<li>Начальные значения X(0) в статье не приведены. По умолчанию подобраны так, чтобы все переменные оставались внутри диапазона от 0 до 1, а число происшествий менялось слабо, как на графике авторов. Их можно изменить.</li>' +
-    '<li>Опубликованные коэффициенты слабо связывают повторяемость причин X₃ с числом происшествий X₂, поэтому многократный рост происшествий, показанный на рис. 5 статьи, этой системой не воспроизводится.</li>' +
-    '<li>Проверка расчёта: значения совпали с отдельной реализацией на Python, а без ограничения диапазона и с решателем DOP853, расхождение не больше 1e-11.</li></ul>' +
+    '<li>Время t нормировано: 0 соответствует первому году периода (2011), 1 последнему. Период по умолчанию 10 лет (2011–2021), что согласуется со значениями факторов в рукописи.</li>' +
+    '<li>Каждая функция влияния f — полином третьей степени. Его коэффициенты в материалах задания не приведены, поэтому по умолчанию заданы демонстрационные функции f(X) = 0,3 + 0,4X. Для реального расчёта вставьте статистику по годам: приложение разделит каждый ряд на максимум и построит все 36 полиномов методом наименьших квадратов.</li>' +
+    '<li>Внешние факторы заданы полиномами из рукописи и по умолчанию делятся на максимум за период, чтобы быть сопоставимыми с нормированными переменными.</li>' +
+    '<li>Начальные значения по умолчанию условные (0,5). При загрузке статистики берутся значения первого года.</li>' +
+    '<li>Значения переменных удерживаются в диапазоне от 0 до 1 (можно отключить).</li></ul>' +
     `<p><b>Обозначения</b></p><div class="dict">${dict(VAR)}${dict(FAC)}</div>`;
+
+  $('statHead').addEventListener('click', () => {
+    const box = $<HTMLTextAreaElement>('statBox');
+    box.value = ['Год'].concat(VAR.map((v) => v.s)).join(';') + '\n' + box.value;
+  });
+  $('statApply').addEventListener('click', applyStatistics);
+}
+
+function applyStatistics(): void {
+  const msg = $('statMsg');
+  const parsed = parseStatistics($<HTMLTextAreaElement>('statBox').value);
+  if (typeof parsed === 'string') { msg.textContent = parsed; return; }
+  const result = fitFromStatistics(parsed);
+  fit = result;
+  P.coef = result.coef.map((c) => [...c] as Poly);
+  P.x0 = result.x0.map((v) => Math.min(1, Math.max(0, v)));
+  const n = parsed.rows.length - 1;
+  if (n >= 3 && n <= 30) { P.years = n; startYear = Math.round(parsed.years[0]); }
+  const worst = Math.min(...result.r2);
+  const mean = result.r2.reduce((s, v) => s + v, 0) / result.r2.length;
+  msg.textContent = `Построено ${N_FUNCS} полиномов по ${parsed.rows.length} годам. R²: среднее ${fmt3(mean)}, минимум ${fmt3(worst)}.`;
+  syncInputs();
+  markCustom();
+  schedule();
 }
 
 function syncInputs(): void {
-  P.factors.forEach((fc, j) => {
-    inputs.f[j][0].value = String(fc.a);
-    inputs.f[j][1].value = String(fc.b);
-    inputs.f[j][2].value = String(P.scale[j]);
+  P.factors.forEach((q, j) => {
+    inputs.f[j][0].value = num(q[2]);
+    inputs.f[j][1].value = num(q[1]);
+    inputs.f[j][2].value = num(q[0]);
+    inputs.f[j][3].value = num(P.scale[j]);
   });
+  inputs.norm.checked = P.normalizeFactors;
   P.x0.forEach((v, i) => { inputs.x0[i][0].value = String(v); inputs.x0[i][1].textContent = f2(v); });
-  P.extra.forEach((v, i) => { inputs.u[i].value = String(v); });
-  P.coef.forEach((c, k) => { inputs.coef[k][0].value = String(c.a); inputs.coef[k][1].value = String(c.b); });
+  P.extra.forEach((v, i) => { inputs.u[i].value = num(v); });
+  P.coef.forEach((c, k) => { for (let d = 0; d < 4; d++) inputs.coef[k][d].value = num(c[d]); });
   inputs.startYear.value = String(startYear);
   inputs.years.value = String(P.years);
   inputs.substeps.value = String(P.substeps);
@@ -185,7 +256,7 @@ function buildPresets(): void {
   for (const pr of PRESETS) {
     const b = el('button', { class: 'chip', type: 'button', 'data-id': pr.id, 'aria-pressed': pr.id === activePreset ? 'true' : 'false' }, esc(pr.name));
     b.addEventListener('click', () => {
-      const keep = { years: P.years, substeps: P.substeps, clamp: P.clamp };
+      const keep = { x0: P.x0, factors: P.factors, normalizeFactors: P.normalizeFactors, coef: P.coef, years: P.years, substeps: P.substeps, clamp: P.clamp };
       P = Object.assign(defaults(), keep);
       pr.set(P);
       activePreset = pr.id;
@@ -201,7 +272,7 @@ function buildLegend(host: HTMLElement, items: Item[], sel: number[]): void {
   host.innerHTML = '';
   items.forEach((it, i) => {
     const b = el('button', { class: 'lg', type: 'button', 'aria-pressed': sel.includes(i) ? 'true' : 'false', title: it.full },
-      `<i style="--c:${col(i)}"></i><b style="font-weight:600">${it.s}</b> ${esc(it.short)}`);
+      `<i style="--c:${col(i)}"></i><b style="font-weight:600">${it.s}</b>`);
     b.addEventListener('click', () => {
       const k = sel.indexOf(i);
       if (k >= 0) { if (sel.length > 1) sel.splice(k, 1); } else sel.push(i);
@@ -212,41 +283,63 @@ function buildLegend(host: HTMLElement, items: Item[], sel: number[]): void {
   });
 }
 
+function renderFunctions(): void {
+  const c = P.coef[fnIdx];
+  const meta = FUNCS[fnIdx];
+  $<HTMLSelectElement>('fnSel').value = String(fnIdx);
+  $('fnFormula').textContent = `${funcLabel(fnIdx)} = ${polyText(c)}`;
+  let pts: Array<{ x: number; y: number }> = [];
+  let note = 'Функция задана коэффициентами из панели параметров.';
+  if (fit) {
+    pts = fit.normalized.map((r) => ({ x: r[meta.arg], y: r[meta.target] }));
+    note = `Точки — нормированная статистика (${VAR[meta.arg].s} по горизонтали, ${VAR[meta.target].s} по вертикали), линия — полином по методу наименьших квадратов, R² = ${fmt3(fit.r2[fnIdx])}.`;
+  }
+  $('fnNote').textContent = note;
+  fnChart($('chartFn'), c, pts, `График функции влияния ${funcLabel(fnIdx)}`);
+  const head = `<thead><tr><th scope="col">f</th><th scope="col">Аргумент</th><th scope="col">Влияет на</th><th scope="col">Полином</th>${fit ? '<th scope="col">R²</th>' : ''}</tr></thead>`;
+  const body = '<tbody>' + P.coef.map((cc, k) =>
+    `<tr${k === fnIdx ? ' class="sel"' : ''}><td>f${sub(k + 1)}</td><td>${VAR[FUNCS[k].arg].s}</td><td>${VAR[FUNCS[k].target].s}</td><td>${polyText(cc)}</td>${fit ? `<td>${fmt3(fit.r2[k])}</td>` : ''}</tr>`).join('') + '</tbody>';
+  $('fnTbl').innerHTML = head + body;
+}
+
 function render(): void {
   pending = false;
-  const base = Object.assign(defaults(), { years: P.years, substeps: P.substeps, clamp: P.clamp });
+  const base = Object.assign(defaults(), {
+    x0: P.x0, factors: P.factors, normalizeFactors: P.normalizeFactors, coef: P.coef,
+    years: P.years, substeps: P.substeps, clamp: P.clamp
+  });
   const cur = solve(P);
   const bas = solve(base);
   const same = JSON.stringify(cur.rows) === JSON.stringify(bas.rows);
   const years = Array.from({ length: P.years + 1 }, (_, i) => String(startYear + i));
   const last = P.years;
 
-  const x2 = cur.rows[last][1];
-  const x2b = bas.rows[last][1];
-  const x20 = cur.rows[0][1];
-  const rel = x2b === 0 ? 0 : ((x2 - x2b) / x2b) * 100;
+  const x1 = cur.rows[last][0];
+  const x1b = bas.rows[last][0];
+  const x10 = cur.rows[0][0];
+  const rel = x1b === 0 ? 0 : ((x1 - x1b) / x1b) * 100;
   let pill: string;
   if (same || Math.abs(rel) < 0.5) pill = '<span class="pill neutral">без изменений</span>';
   else if (rel < 0) pill = `<span class="pill good"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M7 2v10M3 8l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2"/></svg>${f2(Math.abs(rel))}% меньше</span>`;
   else pill = `<span class="pill bad"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M7 12V2M3 6l4-4 4 4" fill="none" stroke="currentColor" stroke-width="2"/></svg>${f2(rel)}% больше</span>`;
-  const dRun = x2 - x20;
+  const dRun = x1 - x10;
   $('tiles').innerHTML =
-    `<div class="tile"><div class="k">Происшествия X₂, ${years[last]}</div><div class="v">${f2(x2)}</div><div class="s">нормированное значение</div></div>` +
-    `<div class="tile"><div class="k">К базовому сценарию</div><div class="v" style="font-family:var(--font-body);font-size:20px;padding-top:8px">${pill}</div><div class="s">базовый: ${f2(x2b)}</div></div>` +
-    `<div class="tile"><div class="k">Изменение за период</div><div class="v">${dRun >= 0 ? '+' : '−'}${f2(Math.abs(dRun))}</div><div class="s">с ${f2(x20)} в ${years[0]}</div></div>`;
+    `<div class="tile"><div class="k">Происшествия Xпроис, ${years[last]}</div><div class="v">${f2(x1)}</div><div class="s">нормированное значение</div></div>` +
+    `<div class="tile"><div class="k">К базовому сценарию</div><div class="v" style="font-family:var(--font-body);font-size:20px;padding-top:8px">${pill}</div><div class="s">без воздействий: ${f2(x1b)}</div></div>` +
+    `<div class="tile"><div class="k">Изменение за период</div><div class="v">${dRun >= 0 ? '+' : '−'}${f2(Math.abs(dRun))}</div><div class="s">с ${f2(x10)} в ${years[0]}</div></div>`;
 
-  $('keyline').innerHTML = same ? '' : '<svg viewBox="0 0 26 8" aria-hidden="true"><line x1="0" y1="4" x2="26" y2="4" stroke="var(--muted)" stroke-width="2" stroke-dasharray="5 4"/></svg> пунктир: базовый сценарий';
+  $('keyline').innerHTML = same ? '' : '<svg viewBox="0 0 26 8" aria-hidden="true"><line x1="0" y1="4" x2="26" y2="4" stroke="var(--muted)" stroke-width="2" stroke-dasharray="5 4"/></svg> пунктир: без воздействий';
 
   buildLegend($('legend'), VAR, shown);
   lineChart($('chart1'), {
-    x: years, showBase: !same, directLabels: shown.length <= 4,
+    x: years, showBase: !same, directLabels: false,
     aria: 'График нормированных значений переменных модели по годам',
     series: shown.map((i) => ({ sym: VAR[i].s, color: col(i), values: cur.rows.map((r) => r[i]), base: bas.rows.map((r) => r[i]) }))
   });
 
   buildLegend($('legendF'), FAC, shownF);
   lineChart($('chart2'), {
-    x: years, showBase: false, directLabels: shownF.length <= 4, minHi: 1,
+    x: years, showBase: false, directLabels: false, minHi: 1,
     aria: 'График внешних факторов по годам',
     series: shownF.map((j) => ({ sym: FAC[j].s, color: col(j), values: cur.factors.map((r) => r[j]) }))
   });
@@ -266,6 +359,8 @@ function render(): void {
       `<div class="val">${f2(val)}</div></div>`;
   }).join('');
 
+  renderFunctions();
+
   const th = '<caption class="note" style="text-align:left;caption-side:top;padding:0 0 6px">Нормированные значения переменных по годам</caption><thead><tr><th scope="col">Год</th>' +
     VAR.map((v) => `<th scope="col" title="${esc(v.full)}">${v.s}</th>`).join('') + '</tr></thead>';
   const tb = '<tbody>' + cur.rows.map((r, k) =>
@@ -284,6 +379,8 @@ $('resetAll').addEventListener('click', () => {
   startYear = 2011;
   activePreset = 'base';
   yearIdx = P.years;
+  fit = null;
+  $('statMsg').textContent = '';
   syncInputs();
   markPreset();
   schedule();

@@ -1,4 +1,5 @@
 import { el, f2 } from './dom';
+import { evalPoly, type Poly } from './model';
 
 const NS = 'http://www.w3.org/2000/svg';
 
@@ -124,4 +125,40 @@ export function lineChart(host: HTMLElement, o: ChartOpts): void {
   hit.addEventListener('pointermove', move);
   hit.addEventListener('pointerdown', move);
   hit.addEventListener('pointerleave', leave);
+}
+
+export function fnChart(host: HTMLElement, coef: Poly, points: Array<{ x: number; y: number }>, aria: string): void {
+  host.innerHTML = '';
+  const W = Math.max(280, host.clientWidth || 600);
+  const H = W < 520 ? 230 : 280;
+  const m = { l: 40, r: 16, t: 12, b: 30 };
+  const pw = W - m.l - m.r;
+  const ph = H - m.t - m.b;
+  const curve: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i <= 40; i++) curve.push({ x: i / 40, y: evalPoly(coef, i / 40) });
+  const all = curve.concat(points).map((q) => q.y);
+  let lo = Math.min(0, ...all);
+  let hi = Math.max(1, ...all);
+  lo = Math.floor(lo * 4) / 4;
+  hi = Math.ceil(hi * 4) / 4;
+  const X = (v: number): number => m.l + v * pw;
+  const Y = (v: number): number => m.t + (1 - (v - lo) / (hi - lo)) * ph;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': aria, height: H });
+  for (let v = lo; v <= hi + 1e-9; v += 0.25) {
+    svg.appendChild(svgEl('line', { x1: m.l, x2: m.l + pw, y1: Y(v), y2: Y(v), stroke: 'var(--grid)', 'stroke-width': 1 }));
+    const t = svgEl('text', { x: m.l - 8, y: Y(v) + 4, 'text-anchor': 'end' });
+    t.textContent = (Math.round(v * 100) / 100).toString().replace('.', ',');
+    svg.appendChild(t);
+  }
+  for (let i = 0; i <= 4; i++) {
+    const t = svgEl('text', { x: X(i / 4), y: H - 8, 'text-anchor': i === 0 ? 'start' : i === 4 ? 'end' : 'middle' });
+    t.textContent = (i / 4).toString().replace('.', ',');
+    svg.appendChild(t);
+  }
+  const d = curve.map((q, i) => `${i ? 'L' : 'M'}${X(q.x).toFixed(1)} ${Y(q.y).toFixed(1)}`).join(' ');
+  svg.appendChild(svgEl('path', { d, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2.4, 'stroke-linejoin': 'round' }));
+  for (const q of points) {
+    svg.appendChild(svgEl('circle', { cx: X(q.x), cy: Y(q.y), r: 4, fill: 'var(--s2)', stroke: 'var(--surface)', 'stroke-width': 1.5 }));
+  }
+  host.appendChild(svg);
 }
